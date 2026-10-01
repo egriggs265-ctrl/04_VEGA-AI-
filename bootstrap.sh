@@ -203,18 +203,29 @@ do_install() {  # do_install <root>
     mkdir -p "$udir"
     src="$home/vega-agent.service"
     [[ -f "$src" ]] || { echo "[bootstrap] missing $src" >&2; return 1; }
-    sed -e "s|@VEGA_HOME@|$home|g" -e "s|@VEGA_ROOT@|$root|g" -e "s|@PY3@|$py3|g" \
+    # escape sed metacharacters in paths (&, |, backslash)
+    local home_esc root_esc py3_esc
+    home_esc="$(printf '%s' "$home" | sed -e 's/[\\&|]/\\&/g')"
+    root_esc="$(printf '%s' "$root" | sed -e 's/[\\&|]/\\&/g')"
+    py3_esc="$(printf '%s' "$py3" | sed -e 's/[\\&|]/\\&/g')"
+    sed -e "s|@VEGA_HOME@|$home_esc|g" -e "s|@VEGA_ROOT@|$root_esc|g" -e "s|@PY3@|$py3_esc|g" \
       "$src" > "$udir/$SERVICE_NAME.tmp"
     mv "$udir/$SERVICE_NAME.tmp" "$udir/$SERVICE_NAME"
     echo "[bootstrap] installed $udir/$SERVICE_NAME"
     if [[ -z "${VEGA_FAKE_SYSTEMD:-}" ]]; then
-      systemctl --user daemon-reload
-      systemctl --user enable --now "$SERVICE_NAME"
-      echo "[bootstrap] enabled and started $SERVICE_NAME (systemctl --user)"
+      if systemctl --user daemon-reload && systemctl --user enable --now "$SERVICE_NAME"; then
+        echo "[bootstrap] enabled and started $SERVICE_NAME (systemctl --user)"
+      else
+        echo "[bootstrap] warning: systemctl --user failed — unit file is installed at $udir/$SERVICE_NAME; enable it by hand" >&2
+      fi
     else
       echo "[bootstrap] (fake systemd: skipped daemon-reload/enable)"
     fi
   else
+    if [[ -z "${VEGA_FAKE_CRONTAB:-}" ]] && ! command -v crontab >/dev/null 2>&1; then
+      echo "[bootstrap] cannot install persistence: no systemd user session and no crontab(1) found" >&2
+      return 1
+    fi
     local line="@reboot $py3 $home/vega-watchdog.py --root $root --manifest $root/jobs.json --loop 60 >> $root/logs/watchdog.log 2>&1"
     if cron_read | grep -qF "$CRON_MARKER"; then
       echo "[bootstrap] cron persistence already installed — skipping (idempotent)"
@@ -238,8 +249,11 @@ do_uninstall() {
     echo "[bootstrap] removed $unit"; removed=1
   fi
   if cron_read | grep -qF "$CRON_MARKER"; then
-    cron_read | grep -vF "$CRON_MARKER" | grep -vF "vega-watchdog.py --root" | cron_write || true
-    # grep -v exits 1 when it removes every line; ensure the (possibly empty) crontab is still written
+    # remove exactly the marker line plus the one @reboot line it installed —
+    # never another root's (or anyone else's) crontab lines
+    cron_read | awk -v m="$CRON_MARKER" \
+      '$0 == m { skip = 1; next } skip { skip = 0; next } { print }' \
+      | cron_write
     echo "[bootstrap] removed cron @reboot persistence"; removed=1
   fi
   [[ "$removed" -eq 0 ]] && echo "[bootstrap] nothing to remove — no vega persistence found"
@@ -317,6 +331,23 @@ ID_LIKE="fedora"'
   check "unit points at watchdog" "1" "$(grep -c 'vega-watchdog.py' "$td/systemd/$SERVICE_NAME")"
   out="$(bash "$0" --uninstall 2>&1)"
   check "unit file removed" "0" "$([[ -f "$td/systemd/$SERVICE_NAME" ]] && echo 1 || echo 0)"
+
+  # --- --install with neither systemd nor crontab: clean refusal, exit 1 ---
+  unset VEGA_FAKE_SYSTEMD
+  mkdir -p "$td/fakebin"
+  for d in /usr/bin /bin; do
+    [[ -d "$d" ]] || continue
+    for b in "$d"/*; do
+      n="${b##*/}"
+      [[ "$n" == "crontab" ]] && continue
+      [[ -e "$td/fakebin/$n" ]] || ln -s "$b" "$td/fakebin/$n"
+    done
+  done
+  out="$(env -u VEGA_FAKE_CRONTAB PATH="$td/fakebin" VEGA_FAKE_SYSTEMD=0 \
+    VEGA_FAKE_UNAME=Linux VEGA_FAKE_OS_RELEASE=/nonexistent \
+    bash "$0" --install --root "$td/nocron-root" 2>&1)"; rc=$?
+  check "install with no crontab refuses (exit 1)" "1" "$rc"
+  check "install with no crontab explains why" "1" "$(echo "$out" | grep -c 'no crontab')"
 
   rm -rf "$td"
   echo "[bootstrap self-test] $pass passed, $fail failed"

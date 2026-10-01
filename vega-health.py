@@ -51,7 +51,6 @@ def atomic_write(path: Path, text: str) -> None:
 def run_probe(probe: dict):
     """Return (ok: bool, detail: str). Never raises."""
     ptype = probe.get("type", "")
-    started = time.monotonic()
     try:
         if ptype == "file_age":
             p = Path(probe["path"])
@@ -96,9 +95,6 @@ def run_probe(probe: dict):
         return False, f"probe misconfigured (missing {e})"
     except Exception as e:  # noqa: BLE001 - a probe must never kill the snapshot
         return False, f"probe error: {e}"
-    finally:
-        pass
-    # elapsed measured by caller
 
 
 def run_all(probes):
@@ -132,7 +128,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    cfg = json.loads(Path(args.probes).read_text(encoding="utf-8"))
+    try:
+        cfg = json.loads(Path(args.probes).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"[vega-health] bad probes config: {e}", file=sys.stderr)
+        return 2
     snapshot = run_all(cfg.get("probes", []))
     text = json.dumps(snapshot, indent=2) + "\n"
     if args.out:

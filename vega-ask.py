@@ -43,6 +43,10 @@ def ask(prompt: str, model: str, host: str, port: int, timeout: float) -> str:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        # NB: HTTPError is a URLError subclass — catch it first so a model
+        # error (404 unknown model, 500, ...) is not misreported as "down"
+        raise AskError(f"ollama http {e.code}: {e.reason}")
     except (urllib.error.URLError, ConnectionError, TimeoutError, OSError,
             socket.timeout) as e:
         raise AskDown(f"ollama unavailable: {e}")
@@ -117,6 +121,14 @@ def self_test() -> int:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", 0))
             seen.update(json.loads(self.rfile.read(length) or b"{}"))
+            if seen.get("model") == "error-model":
+                err = json.dumps({"error": "model not found"}).encode()
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(err)))
+                self.end_headers()
+                self.wfile.write(err)
+                return
             data = json.dumps({"model": seen.get("model"),
                                "response": "hello from fake",
                                "done": True}).encode()
@@ -169,6 +181,12 @@ def self_test() -> int:
     # 7. no prompt at all -> usage error
     r = run("--port", str(port), inp="")
     check("empty prompt -> exit 2", 2, r.returncode)
+
+    # 8-9. ollama answers HTTP 500 -> model error (exit 1), not "unavailable"
+    r = run("--port", str(port), "--model", "error-model", "hi")
+    check("http 500 -> exit 1 (model error)", 1, r.returncode)
+    check("http 500 -> not misreported as down", True,
+          "ollama unavailable" not in r.stderr and "500" in r.stderr)
 
     server.shutdown()
     print(f"[vega-ask self-test] {passed} passed, {failed} failed")

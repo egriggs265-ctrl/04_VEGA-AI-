@@ -82,7 +82,7 @@ Full study: `../hexwatch-v6-study-2026-09-30.md` (in the mining folder).
 - State as JSON, **every write atomic** (temp + `os.replace`). Hexwatch
   defined `safe_write()` but never used it; here nothing writes any other way.
 - File-based IPC: inbox/outbox, heartbeats, JSON status files.
-- `--self-test` on everything. 156 fixture assertions, all passing (see below).
+- `--self-test` on everything. 164 fixture assertions, all passing (see below).
 
 ## Programs
 
@@ -106,7 +106,9 @@ verdict `healthy`/`degraded`. Exit code 2 when degraded.
 
 ### vega-inbox.py — inbox/outbox command dispatcher
 Drop `{"cmd", "args"}` JSON files in `inbox/`; get exactly one reply JSON in
-`outbox/`. Builtin handlers: `ping`, `echo`, `status`, `help`. Unknown
+`outbox/` — including for duplicate-suppressed commands, so a waiting
+client never hangs. Builtin handlers: `ping`, `echo`, `status`, `help`,
+`note` (the watchdog's re-arm command). Unknown
 commands and malformed files get error replies — never a crash, never
 silence. Claim-by-rename (`inbox/` → `processing/` → `done/`) plus SHA-256
 dedup makes double-replies structurally impossible. Pid guard with
@@ -205,17 +207,17 @@ vega-restore.sh snapshot gold       # golden snapshot before risky changes
 
 | program | assertions | result |
 |---|---|---|
-| vega-watchdog.py --self-test | 14 | 14 pass |
+| vega-watchdog.py --self-test | 16 | 16 pass |
 | vega-health.py --self-test | 15 | 15 pass |
-| vega-inbox.py --self-test | 15 | 15 pass |
+| vega-inbox.py --self-test | 16 | 16 pass |
 | vega-rollup.py --self-test | 11 | 11 pass |
 | vega-logrotate.sh --self-test | 15 | 15 pass |
 | vega-sensor.py --self-test | 18 | 18 pass |
-| vega-talk.sh --self-test | 14 | 14 pass |
-| bootstrap.sh --self-test | 32 | 32 pass |
+| vega-talk.sh --self-test | 15 | 15 pass |
+| bootstrap.sh --self-test | 34 | 34 pass |
 | vega-restore.sh --self-test | 13 | 13 pass |
-| vega-ask.py --self-test | 9 | 9 pass |
-| **total** | **156** | **156 pass, 0 fail** |
+| vega-ask.py --self-test | 11 | 11 pass |
+| **total** | **164** | **164 pass, 0 fail** |
 
 ## What's next (not in this batch)
 

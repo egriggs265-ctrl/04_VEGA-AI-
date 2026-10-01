@@ -36,7 +36,8 @@ ignore-pattern match) a finding is appended. If the rule's score >=
 alert_at (default 5), a JSON alert file lands in alerts/.
 
 Layout under root:
-    events/            input event files (any *.log / *.txt, top level)
+    events/            input event files (top level; *.log / *.txt, plus
+                       extensionless files)
     findings.jsonl     appended findings: {ts, file, rule, score, line}
     findings.jsonl.1..5  rotated archives
     alerts/            one JSON file per alert-worthy event
@@ -160,7 +161,7 @@ class Sensor:
                                           "ok": True, **self.counters})
 
     def scan_line(self, line: str, src: str) -> list:
-        """Return findings for one line: [(rule_name, score)]."""
+        """Return findings for one line: [(rule_name, score, alert_at)]."""
         hits = []
         for rule in self.rules:
             if not rule["pattern"].search(line):
@@ -209,7 +210,8 @@ class Sensor:
                         if score >= alert_at:
                             alert = dict(finding)
                             alert["cumulative"] = scores[name]
-                            aname = (f"{int(time.time())}_{name}_"
+                            # ms timestamp: two cycles can share a second
+                            aname = (f"{int(time.time() * 1000)}_{name}_"
                                      f"{outcomes['alerts']}.json")
                             atomic_write(self.alerts / aname,
                                          json.dumps(alert, indent=2) + "\n")
@@ -230,6 +232,36 @@ def load_rules(sensors_path: str | None) -> list:
             raise ValueError("sensors.json must be a JSON list of rules")
         return compile_rules(raw)
     return compile_rules(DEFAULT_RULES)
+
+
+def acquire_lock(lock_path: Path) -> bool:
+    """Pidfile lock with kill -0 stale detection (same as watchdog/inbox)."""
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        pass
+    try:
+        old_pid = int(lock_path.read_text(encoding="utf-8").strip().split()[0])
+        os.kill(old_pid, 0)
+        return False  # live owner
+    except (ValueError, OSError):
+        pass  # stale or unreadable -> take over
+    try:
+        lock_path.unlink()
+    except OSError:
+        pass
+    return acquire_lock(lock_path)
+
+
+def release_lock(lock_path: Path) -> None:
+    try:
+        if lock_path.read_text(encoding="utf-8").strip().split()[0] == str(os.getpid()):
+            lock_path.unlink()
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -254,6 +286,12 @@ def main() -> int:
     sensor.heartbeat(force=True)
 
     if args.loop > 0:
+        lock_path = root / "run" / "sensor.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if not acquire_lock(lock_path):
+            print("[vega-sensor] another instance holds the lock; exiting",
+                  file=sys.stderr)
+            return 1
         try:
             while True:
                 try:
@@ -267,6 +305,8 @@ def main() -> int:
                 time.sleep(args.loop)
         except KeyboardInterrupt:
             pass
+        finally:
+            release_lock(lock_path)
         return 0
 
     out = sensor.cycle()

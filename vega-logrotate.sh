@@ -32,6 +32,11 @@ usage() {
   echo "       $0 --self-test"
 }
 
+# set_mtime_days_ago <file> <days>: portable mtime setter (no GNU touch -d)
+set_mtime_days_ago() {
+  python3 -c 'import os,time,sys; t=time.time()-float(sys.argv[2])*86400; os.utime(sys.argv[1],(t,t))' "$1" "$2"
+}
+
 self_test() {
   local pass=0 fail=0
   check() { # check <label> <expected> <actual>
@@ -45,9 +50,9 @@ self_test() {
   echo "mid" > "$td/mid.log"
   echo "old" > "$td/old.log"
   echo "arch" > "$td/arch.log"; gzip -f "$td/arch.log"
-  touch -d "8 days ago"  "$td/mid.log"
-  touch -d "15 days ago" "$td/old.log"
-  touch -d "20 days ago" "$td/arch.log.gz"
+  set_mtime_days_ago "$td/mid.log" 8
+  set_mtime_days_ago "$td/old.log" 15
+  set_mtime_days_ago "$td/arch.log.gz" 20
 
   # dry-run changes nothing
   bash "$0" "$td" --keep-days 14 --compress-after 7 --dry-run >/dev/null
@@ -127,11 +132,11 @@ manifest="$(printf '{"ts":%s,"logdir":%s,"keep_days":%s,"compress_after":%s,"dry
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
   printf '%s\n' "$manifest"
-  printf '%s\n' "${actions[@]}"
+  if ((${#actions[@]})); then printf '%s\n' "${actions[@]}"; fi
 else
   tmp="$LOGDIR/$MANIFEST_NAME.tmp"
   printf '%s\n' "$manifest" > "$tmp"
   mv "$tmp" "$LOGDIR/$MANIFEST_NAME"
-  printf '%s\n' "${actions[@]}"
+  if ((${#actions[@]})); then printf '%s\n' "${actions[@]}"; fi
   echo "[vega-logrotate] scanned=$scanned compressed=$compressed deleted=$deleted"
 fi

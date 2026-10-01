@@ -138,9 +138,11 @@ import json,time,os; json.dump({'ts': time.time(), 'pid': int(os.environ['SHELL_
   check "timeout returns promptly (<10s, no blind 60s wait)" "1" "$([ "$elapsed" -lt 10 ] && echo 1 || echo 0)"
   check "timeout says what happened" "1" "$(echo "$out" | grep -c 'timed out')"
 
-  # 6. usage error
+  # 6. usage errors
   out="$(bash "$0" 2>&1)"; rc=$?
   check "missing --root is usage error (exit 2)" "2" "$rc"
+  out="$(bash "$0" --root "$td" --timeout abc ping 2>&1)"; rc=$?
+  check "non-numeric --timeout is usage error (exit 2)" "2" "$rc"
 
   rm -rf "$td"
   echo "[vega-talk self-test] $pass passed, $fail failed"
@@ -166,6 +168,8 @@ done
 
 [[ -n "$ROOT" ]] || { usage >&2; exit 2; }
 [[ -d "$ROOT" ]] || { echo "not a directory: $ROOT" >&2; exit 2; }
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || { echo "[vega-talk] --timeout must be a positive integer" >&2; exit 2; }
+[[ "$MAX_STALE" =~ ^[0-9]+$ ]] || { echo "[vega-talk] --max-stale must be a positive integer" >&2; exit 2; }
 HB_PATH="$ROOT/state/heartbeat.json"
 
 if ! liveness_check; then exit 3; fi

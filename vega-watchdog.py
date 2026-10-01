@@ -165,7 +165,19 @@ def main() -> int:
         return self_test()
 
     root = Path(args.root)
-    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"[watchdog] bad manifest: {e}", file=sys.stderr)
+        return 2
+    if not isinstance(manifest, dict):
+        print("[watchdog] bad manifest: top level must be an object", file=sys.stderr)
+        return 2
+    for i, job in enumerate(manifest.get("jobs", [])):
+        if not isinstance(job, dict) or not job.get("name") or not job.get("heartbeat_file"):
+            print(f"[watchdog] bad manifest: job #{i} needs 'name' and 'heartbeat_file'",
+                  file=sys.stderr)
+            return 2
     status_file = Path(manifest.get("status_file", str(root / "health" / "jobs.json")))
     hb_file = Path(manifest.get("heartbeat_file",
                                 str(root / "health" / "watchdog.heartbeat")))
@@ -279,6 +291,18 @@ def self_test() -> int:
         (root / "hb_bare.txt").write_text(str(int(now - 50)) + "\n")
         ts, detail = read_heartbeat(root / "hb_bare.txt")
         check("bare epoch heartbeat parsed", ts is not None and abs(ts - (now - 50)) < 2)
+
+        # malformed manifest fails fast with a clean message, not a traceback
+        import subprocess
+        bad = root / "bad-jobs.json"
+        bad.write_text(json.dumps({"jobs": [{"name": "no-heartbeat-field"}]}))
+        r = subprocess.run(
+            [sys.executable, __file__, "--manifest", str(bad),
+             "--root", str(root)],
+            capture_output=True, text=True, timeout=30)
+        check("bad manifest -> exit 2", r.returncode == 2)
+        check("bad manifest -> clean message, no traceback",
+              "bad manifest" in r.stderr and "Traceback" not in r.stderr)
 
     print(f"[vega-watchdog self-test] {passed} passed, {failed} failed")
     return 1 if failed else 0

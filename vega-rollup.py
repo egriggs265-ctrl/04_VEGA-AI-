@@ -22,7 +22,8 @@ Usage:
     vega-rollup.py --log-dir ./hidden_files --date 2026-09-30 --append WORKLOG.md
     vega-rollup.py --self-test
 
-Files scanned: *<date>*.md and *<date>*.log under --log-dir (top level only).
+Files scanned: *<date>*.md, *<date>*.log and *<date>*.txt under --log-dir
+(top level only).
 Output digest:
     ## Rollup 2026-09-30
     - log files scanned: 3
@@ -92,7 +93,11 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    data = rollup(Path(args.log_dir), args.date)
+    log_dir = Path(args.log_dir)
+    if not log_dir.is_dir():
+        print(f"[vega-rollup] not a directory: {log_dir}", file=sys.stderr)
+        return 2
+    data = rollup(log_dir, args.date)
     digest = digest_markdown(data)
     print(digest, end="")
     if args.append:

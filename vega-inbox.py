@@ -29,7 +29,7 @@ Command file format (inbox/<id>.json):
     {"id": "abc123", "cmd": "ping", "args": {}}
 "id" is optional; the filename stem is used when absent.
 
-Builtin handlers: ping, echo, status, help. Unknown cmd -> error reply
+Builtin handlers: ping, echo, status, help, note. Unknown cmd -> error reply
 (never a crash, never silent).
 
 Layout under root:
@@ -100,7 +100,9 @@ class Dispatcher:
                 "deduped": self.counters["deduped"],
             }, indent=2)
         if cmd == "help":
-            return True, "commands: ping | echo text=... | status | help"
+            return True, "commands: ping | echo text=... | status | help | note text=..."
+        if cmd == "note":
+            return True, f"noted: {args.get('text', '')}"
         return False, f"error: unknown command '{cmd}'"
 
     # -- dedup ------------------------------------------------------------
@@ -164,6 +166,12 @@ class Dispatcher:
         if digest in seen:
             self.counters["deduped"] += 1
             self.save_seen(seen)
+            # a deduped command still gets exactly one reply, so a client
+            # waiting on outbox/<id>.json never hangs on a timeout
+            atomic_write(self.outbox / f"{cid}.json",
+                         json.dumps({"id": cid, "ok": True,
+                                     "reply": "deduped: identical command already processed",
+                                     "ts": time.time()}, indent=2) + "\n")
             os.rename(claimed, self.done / cmd_file.name)
             return "dedup"
         seen[digest] = now
@@ -289,10 +297,12 @@ def self_test() -> int:
         (root / "inbox" / "c4.json").write_text("{not valid json!!!")
         (root / "inbox" / "c5.json").write_text(
             json.dumps({"id": "c5", "cmd": "status", "args": {}}))
+        (root / "inbox" / "c6.json").write_text(
+            json.dumps({"id": "c6", "cmd": "note", "args": {"text": "re-arm test"}}))
 
         outcomes = disp.cycle()
-        check("cycle processed 5 files",
-              sum(outcomes.values()) == 5 and outcomes["gone"] == 0)
+        check("cycle processed 6 files",
+              sum(outcomes.values()) == 6 and outcomes["gone"] == 0)
 
         r1 = json.loads((root / "outbox" / "c1.json").read_text())
         check("ping round-trips", r1["ok"] and r1["reply"].startswith("pong "))
@@ -307,9 +317,12 @@ def self_test() -> int:
         r5 = json.loads((root / "outbox" / "c5.json").read_text())
         st = json.loads(r5["reply"])
         check("status reply is valid json", st["app"] == "vega-inbox")
+        r6 = json.loads((root / "outbox" / "c6.json").read_text())
+        check("note handler acks (the watchdog's re-arm cmd)",
+              r6["ok"] and r6["reply"] == "noted: re-arm test")
 
         check("inbox drained", list((root / "inbox").glob("*.json")) == [])
-        check("done holds 5 files", len(list((root / "done").glob("*.json"))) == 5)
+        check("done holds 6 files", len(list((root / "done").glob("*.json"))) == 6)
         check("processing empty", list((root / "processing").glob("*")) == [])
 
         hb = json.loads((root / "state" / "heartbeat.json").read_text())
@@ -324,16 +337,18 @@ def self_test() -> int:
         check("rerun: nothing new, no double replies",
               before == after and sum(outcomes2.values()) == 0)
 
-        # dedup: identical command re-queued within window is suppressed
-        (root / "inbox" / "c6.json").write_text(
-            json.dumps({"id": "c6", "cmd": "ping", "args": {}}))
+        # dedup: identical command re-queued within window is suppressed,
+        # but still gets exactly one reply (no client hangs on a timeout)
+        (root / "inbox" / "c7.json").write_text(
+            json.dumps({"id": "c7", "cmd": "ping", "args": {}}))
         disp.cycle()
-        check("duplicate ping suppressed (no new outbox file)",
-              not (root / "outbox" / "c6.json").exists())
+        r7 = json.loads((root / "outbox" / "c7.json").read_text())
+        check("deduped command still gets a reply",
+              r7["ok"] and "deduped" in r7["reply"])
 
         log_lines = (root / "state" / "commands.jsonl").read_text().strip().splitlines()
-        check("commands.jsonl has 5 entries (deduped cmd not re-logged)",
-              len(log_lines) == 5)
+        check("commands.jsonl has 6 entries (deduped cmd not re-logged)",
+              len(log_lines) == 6)
         check("dedup counter incremented",
               json.loads((root / "outbox" / "c1.json").read_text())["ok"]
               and disp.counters["deduped"] == 1)
