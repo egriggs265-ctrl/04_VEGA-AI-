@@ -1,8 +1,18 @@
 # 04_VEGA-AI- — Sable's personal repo
 
+[![verify](https://github.com/egriggs265-ctrl/04_VEGA-AI-/actions/workflows/verify.yml/badge.svg)](https://github.com/egriggs265-ctrl/04_VEGA-AI-/actions/workflows/verify.yml)
+
 Built 2026-09-30 by Sable (Muse), from Elliot's code, with his standing
 authorization. Improved rebuilds of his proven patterns — his engineering
 vocabulary, his monolith shape, his bugs fixed.
+
+## Verification
+
+Every push and pull request runs the full self-test suite via GitHub
+Actions (`.github/workflows/verify.yml`): each `vega-*.py --self-test`
+plus `bash -n` and `--self-test` on the shell programs. The suite is
+hermetic — no network, no pip installs, stdlib only. A failing program
+fails the job.
 
 ## Lineage
 
@@ -11,6 +21,8 @@ vocabulary, his monolith shape, his bugs fixed.
 - `vega-inbox.py` ← `hexwatch_v6_monolith.py` (Hexwatch V6 / Hexstrike_V6 line)
 - `vega-rollup.py` ← monolith rollup thread + `sentinel-report`
 - `vega-logrotate.sh` ← `hexshield-log-rotate` + `sentinel-log-rotate` + `sentinel-clean`
+- `vega-sensor.py` ← `hexshield/agent.py` (Android-Sentinel)
+- `vega-talk.sh` ← hexwatch `bin/talk.sh` (Hexwatch V6)
 
 Full study: `../hexwatch-v6-study-2026-09-30.md` (in the mining folder).
 
@@ -20,7 +32,7 @@ Full study: `../hexwatch-v6-study-2026-09-30.md` (in the mining folder).
 - State as JSON, **every write atomic** (temp + `os.replace`). Hexwatch
   defined `safe_write()` but never used it; here nothing writes any other way.
 - File-based IPC: inbox/outbox, heartbeats, JSON status files.
-- `--self-test` on everything. 70 fixture assertions, all passing (see below).
+- `--self-test` on everything. 102 fixture assertions, all passing (see below).
 
 ## Programs
 
@@ -68,12 +80,34 @@ Deletes logs older than `--keep-days` (default 14), gzips logs older than
 
     bash vega-logrotate.sh ./hidden_files --keep-days 14 --compress-after 7 --dry-run
 
+### vega-sensor.py — hexshield-style event sensor
+Polls a directory of event files, regex-scores each new line against a
+rule set (`--sensors sensors.json`, or built-in auth/security rules),
+appends JSONL findings, keeps cumulative per-rule scores, emits a JSON
+alert per high-scoring event, and heartbeats. Findings self-rotate at
+128KB / 400 lines (hexshield's rule). The portable core of
+`hexshield/agent.py` — drop any watcher's output files in `events/`.
+
+    python3 vega-sensor.py --root ./vega-root              # one pass
+    python3 vega-sensor.py --root ./vega-root --loop 8     # poll every 8s
+
+### vega-talk.sh — operator client for the inbox/outbox protocol
+Sends one command to `vega-inbox.py` and waits for its reply. Fixes
+`talk.sh`'s blind 60s wait: refuses to send (exit 3) when
+`state/heartbeat.json` is missing, stale, or its pid is dead.
+
+    bash vega-talk.sh --root ./vega-root ping
+    bash vega-talk.sh --root ./vega-root echo text=hello
+    bash vega-talk.sh --root ./vega-root --json '{"cmd":"status"}'
+
 ## Wiring them together
 
 ```
 vega-watchdog.py --loop 60          # supervises everything below
   -> re-arm files -> inbox/
 vega-inbox.py --loop 5              # dispatches re-arms + operator commands
+vega-talk.sh ping                   # operator CLI against the dispatcher
+vega-sensor.py --loop 8             # scores event files -> findings.jsonl
 vega-health.py (hourly, via cron)   # one snapshot for the autonomy sweep
 vega-rollup.py (daily, via cron)    # digest appended to WORKLOG
 vega-logrotate.sh (daily, via cron) # hygiene
@@ -88,15 +122,14 @@ vega-logrotate.sh (daily, via cron) # hygiene
 | vega-inbox.py --self-test | 15 | 15 pass |
 | vega-rollup.py --self-test | 11 | 11 pass |
 | vega-logrotate.sh --self-test | 15 | 15 pass |
-| **total** | **70** | **70 pass, 0 fail** |
+| vega-sensor.py --self-test | 18 | 18 pass |
+| vega-talk.sh --self-test | 14 | 14 pass |
+| **total** | **102** | **102 pass, 0 fail** |
 
 ## What's next (not in this batch)
 
-- `vega-sensor.py` — the `hexshield/agent.py` skeleton (poll → regex →
-  score → JSONL with self-rotation → JSON alerts → 60s heartbeat) with a
-  pluggable sensor. Payment-watch / email-watch upgrade path.
-- `vega-talk.sh` — operator CLI in the `talk.sh` shape (append to inbox,
-  wait on outbox by byte offset), minus the 60-second blind wait when the
-  dispatcher is down.
 - Golden-restore wrapper (`sentinel-restore-golden` pattern) before any
   self-modifying program touches its own tree.
+- Offline-LLaMA `ask` layer: `ollama run` via CLI (stdin prompt, 120s
+  timeout, `"(no response)"` sentinel) with the backoff actually wired in —
+  hexwatch's was dead code.
