@@ -1,0 +1,25 @@
+# vega-agent.service — systemd user unit for the vega watchdog.
+#
+# Installed by `bootstrap.sh --install` (no sudo, per-user). Placeholders
+# @VEGA_HOME@ (this repo dir), @VEGA_ROOT@ (working root), @PY3@ (python3)
+# are substituted at install time — never edit the installed copy by hand,
+# re-run the installer instead.
+#
+# WorkingDirectory is the conventional %h/vega-root; bootstrap.sh
+# --install defaults --root to $HOME/vega-root so this matches. All paths
+# in ExecStart are absolute, so a custom --root still works.
+[Unit]
+Description=Vega agent watchdog (per-user)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vega-root
+ExecStart=@PY3@ @VEGA_HOME@/vega-watchdog.py --root @VEGA_ROOT@ --manifest @VEGA_ROOT@/jobs.json --loop 60
+Restart=always
+RestartSec=10
+StandardOutput=append:@VEGA_ROOT@/logs/watchdog.log
+StandardError=append:@VEGA_ROOT@/logs/watchdog.err
+
+[Install]
+WantedBy=default.target
