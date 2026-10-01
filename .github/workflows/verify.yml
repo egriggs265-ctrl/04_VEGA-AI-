@@ -20,7 +20,7 @@ jobs:
 
       - name: Python self-tests
         run: |
-          for p in vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py vega-ask.py; do
+          for p in vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py vega-ask.py vega-cron.py vega-status.py; do
             echo "== $p --self-test"
             python3 "$p" --self-test || exit 1
           done
