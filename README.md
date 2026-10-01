@@ -82,7 +82,7 @@ Full study: `../hexwatch-v6-study-2026-09-30.md` (in the mining folder).
 - State as JSON, **every write atomic** (temp + `os.replace`). Hexwatch
   defined `safe_write()` but never used it; here nothing writes any other way.
 - File-based IPC: inbox/outbox, heartbeats, JSON status files.
-- `--self-test` on everything. 164 fixture assertions, all passing (see below).
+- `--self-test` on everything. 211 fixture assertions, all passing (see below).
 
 ## Programs
 
@@ -186,6 +186,44 @@ exit 1).
     python3 vega-ask.py "summarize the overnight findings"
     echo "is the dispatcher alive?" | python3 vega-ask.py --model llama3.2:3b
 
+### vega-cron.py — portable job scheduler
+cron(8) doesn't exist everywhere this toolkit runs (Termux, macOS,
+minimal containers). vega-cron.py is the portable replacement: it reads
+a schedule list and drops command files into `inbox/` when they're due,
+for vega-inbox.py to dispatch. The wiring below says "hourly, via cron" —
+this is what makes that true on machines without cron.
+
+    python3 vega-cron.py --schedules schedules.json --root ./vega-root --loop 30
+    python3 vega-cron.py --schedules schedules.json --root ./vega-root --once
+
+Schedule file: `{"schedules": [{"name": "hourly-health", "every_s": 3600,
+"cmd": {"cmd": "note", "args": {"text": "run the health sweep"}},
+"catchup": true, "enabled": true}]}`. A schedule with no history fires on
+the first cycle, then every `every_s` seconds. After an outage longer than
+1.5x the interval, `catchup: true` queues exactly one command (never a
+flood); `catchup: false` skips the missed window. At most one command per
+schedule per cycle. State in `state/cron.json` (atomic), heartbeat in
+`state/cron.heartbeat` — point a watchdog job at it to supervise the
+scheduler itself. NB: the dispatcher's 10-minute dedup window applies, so
+a schedule firing identical cmd+args more often than that should carry
+something unique in args. `bootstrap.sh --install` writes a starter
+`schedules.json` (hourly health note, daily rollup note) alongside the
+starter `jobs.json`; edit freely.
+
+### vega-status.py — one-glance status for the whole tree
+Read-only aggregator: reads the JSON the other tools already write
+(watchdog jobs, inbox heartbeat/counters, sensor scores/alerts, cron
+schedules, snapshots) and answers "is everything alive?" Verdict `ok` /
+`degraded` (reasons listed) / `idle` (nothing detected). Never writes,
+never locks.
+
+    python3 vega-status.py --root ./vega-root
+    python3 vega-status.py --root ./vega-root --json   # machine-readable
+
+It expects the daemon shape from "Wiring them together" (inbox as
+`--loop`): a dispatcher that ran one-shot and exited shows as not-running
+— vega-talk.sh would refuse to send through it too.
+
 ## Wiring them together
 
 ```
@@ -197,8 +235,10 @@ vega-inbox.py --loop 5              # dispatches re-arms + operator commands
 vega-talk.sh ping                   # operator CLI against the dispatcher
 vega-ask.py "..."                   # ask the offline LLaMA (Ollama on localhost)
 vega-sensor.py --loop 8             # scores event files -> findings.jsonl
-vega-health.py (hourly, via cron)   # one snapshot for the autonomy sweep
-vega-rollup.py (daily, via cron)    # digest appended to WORKLOG
+vega-health.py (hourly, via cron or vega-cron.py) # one snapshot for the autonomy sweep
+vega-rollup.py (daily, via cron or vega-cron.py)  # digest appended to WORKLOG
+vega-cron.py --loop 30              # portable scheduler: recurring commands -> inbox/
+vega-status.py                      # one glance: jobs, dispatcher, sensor, cron, snapshots
 vega-logrotate.sh (daily, via cron) # hygiene
 vega-restore.sh snapshot gold       # golden snapshot before risky changes
 ```
@@ -214,10 +254,12 @@ vega-restore.sh snapshot gold       # golden snapshot before risky changes
 | vega-logrotate.sh --self-test | 15 | 15 pass |
 | vega-sensor.py --self-test | 18 | 18 pass |
 | vega-talk.sh --self-test | 15 | 15 pass |
-| bootstrap.sh --self-test | 34 | 34 pass |
+| bootstrap.sh --self-test | 38 | 38 pass |
 | vega-restore.sh --self-test | 13 | 13 pass |
 | vega-ask.py --self-test | 11 | 11 pass |
-| **total** | **164** | **164 pass, 0 fail** |
+| vega-cron.py --self-test | 21 | 21 pass |
+| vega-status.py --self-test | 22 | 22 pass |
+| **total** | **211** | **211 pass, 0 fail** |
 
 ## What's next (not in this batch)
 

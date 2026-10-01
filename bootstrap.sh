@@ -32,7 +32,7 @@ MODE="bootstrap"
 CRON_MARKER="# vega-agent-persistence (bootstrap.sh)"
 SERVICE_NAME="vega-agent.service"
 
-PY_PROGS=(vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py vega-ask.py)
+PY_PROGS=(vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py vega-ask.py vega-cron.py vega-status.py)
 SH_PROGS=(vega-logrotate.sh vega-talk.sh vega-restore.sh)
 
 usage() {
@@ -192,12 +192,47 @@ EOF
   echo "[bootstrap] wrote starter $jf (edit it for your jobs)"
 }
 
+# ensure_schedules_json <root>: starter schedules for vega-cron.py, if none exists
+ensure_schedules_json() {
+  local root="$1" sf="$1/schedules.json"
+  [[ -f "$sf" ]] && return 0
+  ROOT="$root" SF="$sf" python3 - <<'EOF'
+import json, os
+root = os.environ["ROOT"]
+schedules = {
+    "schedules": [
+        {"name": "hourly-health",
+         "every_s": 3600,
+         "cmd": {"cmd": "note",
+                 "args": {"text": "hourly health sweep: run vega-health.py and vega-status.py"}},
+         "catchup": True, "enabled": True},
+        {"name": "daily-rollup",
+         "every_s": 86400,
+         "cmd": {"cmd": "note",
+                 "args": {"text": "daily rollup: run vega-rollup.py --append WORKLOG.md"}},
+         "catchup": True, "enabled": True},
+    ],
+    "inbox_dir": root + "/inbox",
+    "state_file": root + "/state/cron.json",
+    "heartbeat_file": root + "/state/cron.heartbeat",
+    "_note": ("starter schedules written by bootstrap.sh --install; "
+              "run: python3 vega-cron.py --schedules SCHED --root ROOT --loop 30; "
+              "point a watchdog job at state/cron.heartbeat to supervise it"),
+}
+tmp = os.environ["SF"] + ".tmp"
+open(tmp, "w").write(json.dumps(schedules, indent=2) + "\n")
+os.replace(tmp, os.environ["SF"])
+EOF
+  echo "[bootstrap] wrote starter $sf (edit it for your schedules)"
+}
+
 do_install() {  # do_install <root>
   local root="$1" home="$PROG_DIR" py3 unit src
   mkdir -p "$root"
   root="$(cd "$root" && pwd)"  # absolute from here on
   py3="$(command -v python3)"
   ensure_jobs_json "$root"
+  ensure_schedules_json "$root"
   if has_systemd_user; then
     local udir; udir="$(sysd_user_dir)"
     mkdir -p "$udir"
@@ -316,8 +351,15 @@ ID_LIKE="fedora"'
   check "install exits 0" "0" "$rc"
   check "cron @reboot line installed" "1" "$(grep -c '@reboot.*vega-watchdog.py' "$td/crontab")"
   check "starter jobs.json written" "1" "$([[ -f "$td/svc-root/jobs.json" ]] && echo 1 || echo 0)"
+  check "starter schedules.json written" "1" "$([[ -f "$td/svc-root/schedules.json" ]] && echo 1 || echo 0)"
+  check "starter schedules.json has two schedules" "2" \
+    "$(python3 -c "import json;d=json.load(open('$td/svc-root/schedules.json'));print(len(d['schedules']))")"
+  check "starter schedules.json loads via vega-cron --once" "0" \
+    "$(python3 vega-cron.py --schedules "$td/svc-root/schedules.json" --root "$td/svc-root" --once >/dev/null 2>&1; echo $?)"
   bash "$0" --install --root "$td/svc-root" >/dev/null 2>&1
   check "install is idempotent (one @reboot line)" "1" "$(grep -c '@reboot.*vega-watchdog.py' "$td/crontab")"
+  check "install is idempotent (schedules.json untouched)" "1" \
+    "$([[ -f "$td/svc-root/schedules.json" ]] && echo 1 || echo 0)"
   out="$(bash "$0" --uninstall 2>&1)"; rc=$?
   check "uninstall exits 0" "0" "$rc"
   check "cron line removed" "0" "$(grep -c 'vega-watchdog.py' "$td/crontab" || true)"
