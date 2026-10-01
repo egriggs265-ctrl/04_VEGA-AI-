@@ -20,16 +20,28 @@ jobs:
 
       - name: Python self-tests
         run: |
-          for p in vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py; do
+          for p in vega-watchdog.py vega-health.py vega-inbox.py vega-rollup.py vega-sensor.py vega-ask.py; do
             echo "== $p --self-test"
             python3 "$p" --self-test || exit 1
           done
 
       - name: Shell syntax + self-tests
         run: |
+          bash -n bootstrap.sh
           bash -n vega-logrotate.sh
           bash -n vega-talk.sh
+          bash -n vega-restore.sh
           echo "== vega-logrotate.sh --self-test"
           bash vega-logrotate.sh --self-test || exit 1
           echo "== vega-talk.sh --self-test"
           bash vega-talk.sh --self-test || exit 1
+          echo "== vega-restore.sh --self-test"
+          bash vega-restore.sh --self-test || exit 1
+
+      - name: Bootstrap probe
+        run: |
+          bash bootstrap.sh --check || exit 1
+
+      - name: Bootstrap self-test
+        run: |
+          bash bootstrap.sh --self-test || exit 1
